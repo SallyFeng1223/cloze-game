@@ -207,7 +207,7 @@ export default function App() {
 
   // ✅ 核心功能：向 Google Apps Script 獲取雲端題庫，並處理錯誤備援
   useEffect(() => {
-    const GOOGLE_API_URL = 'https://script.google.com/macros/s/AKfycbzEvrHPGUd7UaWD7JRm2qkRhAffOdA6mRkmOwzP5uUnYaP26i5MMoqlUfGtc5ahitoukw/exec';
+    const GOOGLE_API_URL = 'https://script.google.com/macros/s/AKfycbwYOUR_API_KEY_HERE/exec';
     
     // 載入備用離線題庫的函數
     const loadOfflineData = () => {
@@ -400,6 +400,14 @@ export default function App() {
     
     const sourceQuestions = mode === 'spelling' ? spellingQuestions : clozeQuestions;
     let shuffledQuestions = shuffleArray(sourceQuestions);
+    
+    // ✅ 新增核心邏輯：如果是克漏字模式，將每個題目的「選項 (options)」也進行隨機洗牌
+    if (mode === 'cloze') {
+      shuffledQuestions = shuffledQuestions.map(q => ({
+        ...q,
+        options: shuffleArray(q.options)
+      }));
+    }
     
     const MAX_QUESTIONS_PER_GAME = 10;
     shuffledQuestions = shuffledQuestions.slice(0, MAX_QUESTIONS_PER_GAME);
