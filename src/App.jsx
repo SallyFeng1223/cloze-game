@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { Star, Award, ArrowRight, CheckCircle2, XCircle, RotateCcw, Home, Sparkles, Clock, Volume2, LogOut, Trophy, User, AlertCircle, Loader2, ListOrdered, X } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Star, Award, ArrowRight, CheckCircle2, XCircle, RotateCcw, Home, Sparkles, Clock, Volume2, LogOut, Trophy, User, AlertCircle, Loader2, ListOrdered, X, CloudUpload } from 'lucide-react';
 
-// 👇👇👇 內建題庫區 (做為無法連線 Google Sheet 時的備援資料) 👇👇👇
+// 👇 內建題庫區 (備援資料) 👇
 const rawCSVData = `題型(1=克漏字/2=單字),題目或單字,選項(克漏字專用請用分號;隔開),正確答案(克漏字專用),翻譯(克漏字專用)
 1,"I _____ Abby.","am;are;is",am,我是 Abby。
 1,"You _____ Nick.","is;am;are",are,你是 Nick。
@@ -94,9 +94,7 @@ const rawCSVData = `題型(1=克漏字/2=單字),題目或單字,選項(克漏�
 2,run,跑 (動作),,
 2,thumbs up,豎起大拇指 (動作),,
 `;
-// 👆👆👆 貼上到上方為止 👆👆👆
 
-// CSV(逗號) 與 TSV(Tab鍵) 的智慧解析器
 const parseCSVRow = (str, delimiter = ',') => {
   const result = [];
   let cur = '';
@@ -115,7 +113,6 @@ const parseCSVRow = (str, delimiter = ',') => {
   return result.map(val => val.replace(/^"|"$/g, '').replace(/""/g, '"').trim());
 };
 
-// --- 音效產生器 (Web Audio API) ---
 const playSound = (type) => {
   try {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -148,7 +145,6 @@ const playSound = (type) => {
   }
 };
 
-// --- 語音提示產生器 (Web Speech API) --- 
 const speakWord = (word) => {
   if ('speechSynthesis' in window) {
     window.speechSynthesis.cancel();
@@ -175,7 +171,6 @@ const speakWord = (word) => {
   }
 };
 
-// --- 遊戲組件 ---
 export default function App() {
   const [gameState, setGameState] = useState('menu'); 
   const [currentQIndex, setCurrentQIndex] = useState(0);
@@ -184,9 +179,9 @@ export default function App() {
   const [timeLeft, setTimeLeft] = useState(20); 
   const [wrongAnswers, setWrongAnswers] = useState([]);
   
-  // 讀取狀態與題庫狀態
   const [isLoading, setIsLoading] = useState(true);
   const [isOfflineMode, setIsOfflineMode] = useState(false);
+  const [isUploadingData, setIsUploadingData] = useState(false); // ✅ 追蹤錯題上傳狀態
   
   const [clozeQuestions, setClozeQuestions] = useState([]);
   const [spellingQuestions, setSpellingQuestions] = useState([]);
@@ -204,11 +199,13 @@ export default function App() {
   const [scrambledLetters, setScrambledLetters] = useState([]);
   const [selectedLetters, setSelectedLetters] = useState([]);
 
-  // ✅ 核心功能：向 Google Sheets 發布的 CSV 獲取雲端題庫
+  // 👇 讀取題庫用 API (維持原本極速的 CSV 直連)
+  const GOOGLE_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQTwvB4VjTDD1-nsFjH8-fcXccWAebG-bPhwWLMfJrwDfRT3o_29WnXOHpnqepDNPIA3c5m0LdQVjBH/pub?gid=0&single=true&output=csv';
+  
+  // 👇 ✅ 寫入錯題用 API (請換成您剛才在 Apps Script 部署拿到的網址) 👇
+  const GOOGLE_POST_API_URL = 'https://script.google.com/macros/s/AKfycbwEQA2wYvFE9os7foyjgqO1PdMSbMmuDEOk_aIg_v7yxOsCEsq8A7IaSB40liai7EpqKQ/exec';
+
   useEffect(() => {
-    // 這是您提供的 Google Sheet CSV 直連網址
-    const GOOGLE_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQTwvB4VjTDD1-nsFjH8-fcXccWAebG-bPhwWLMfJrwDfRT3o_29WnXOHpnqepDNPIA3c5m0LdQVjBH/pub?gid=0&single=true&output=csv';
-    
     const loadOfflineData = () => {
       const cloze = [];
       const spelling = [];
@@ -221,20 +218,10 @@ export default function App() {
         
         const type = cols[0].toString().trim();
         if (type === '1') {
-          cloze.push({
-            id: cloze.length + 1,
-            question: cols[1] || "",
-            options: (cols[2] || "").split(';').map(s => s.trim()).filter(s => s !== ""),
-            answer: cols[3] || "",
-            translation: cols[4] || ""
-          });
+          cloze.push({ id: cloze.length + 1, question: cols[1] || "", options: (cols[2] || "").split(';').map(s => s.trim()).filter(s => s !== ""), answer: cols[3] || "", translation: cols[4] || "" });
         } else if (type === '2') {
           const safeWord = (cols[1] || "").toLowerCase().replace(/\([^)]*\)/g, '').replace(/[^a-z]/g, '');
-          spelling.push({
-            id: spelling.length + 1,
-            word: safeWord,
-            hint: cols[2] || ""
-          });
+          spelling.push({ id: spelling.length + 1, word: safeWord, hint: cols[2] || "" });
         }
       }
       setClozeQuestions(cloze);
@@ -247,12 +234,9 @@ export default function App() {
       try {
         const response = await fetch(GOOGLE_CSV_URL);
         if (!response.ok) throw new Error('網路回應錯誤');
-        
-        // 解析抓下來的純文字 CSV
         const csvText = await response.text();
         const lines = csvText.split(/\r?\n/).filter(line => line.trim() !== '');
         const delimiter = csvText.includes('\t') ? '\t' : ','; 
-        
         const cloze = [];
         const spelling = [];
         
@@ -262,41 +246,27 @@ export default function App() {
           
           const type = cols[0].toString().trim();
           if (type === '1') {
-            cloze.push({
-              id: cloze.length + 1,
-              question: cols[1] || "",
-              options: (cols[2] || "").split(';').map(s => s.trim()).filter(s => s !== ""),
-              answer: cols[3] || "",
-              translation: cols[4] || ""
-            });
+            cloze.push({ id: cloze.length + 1, question: cols[1] || "", options: (cols[2] || "").split(';').map(s => s.trim()).filter(s => s !== ""), answer: cols[3] || "", translation: cols[4] || "" });
           } else if (type === '2') {
             const safeWord = (cols[1] || "").toLowerCase().replace(/\([^)]*\)/g, '').replace(/[^a-z]/g, '');
-            spelling.push({
-              id: spelling.length + 1,
-              word: safeWord,
-              hint: cols[2] || ""
-            });
+            spelling.push({ id: spelling.length + 1, word: safeWord, hint: cols[2] || "" });
           }
         }
-        
         if (cloze.length > 0) setClozeQuestions(cloze);
         if (spelling.length > 0) setSpellingQuestions(spelling);
         
         setIsLoading(false);
         setIsOfflineMode(false);
       } catch (error) {
-        console.error("無法載入雲端題庫，切換至內建離線模式:", error);
+        console.error("載入失敗:", error);
         loadOfflineData();
       }
     };
-
     fetchQuestions();
     
     if ('speechSynthesis' in window) {
       window.speechSynthesis.getVoices();
-      window.speechSynthesis.onvoiceschanged = () => {
-        window.speechSynthesis.getVoices();
-      };
+      window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
     }
   }, []);
 
@@ -314,8 +284,7 @@ export default function App() {
     let letters = word.split('');
     const totalOptions = Math.max(10, word.length + 5); 
     while (letters.length < totalOptions) {
-      const randomChar = alphabet[Math.floor(Math.random() * alphabet.length)];
-      letters.push(randomChar);
+      letters.push(alphabet[Math.floor(Math.random() * alphabet.length)]);
     }
     let scrambled = letters.map((char, index) => ({ char, id: index }));
     for (let i = scrambled.length - 1; i > 0; i--) {
@@ -342,7 +311,6 @@ export default function App() {
     const sourceQuestions = mode === 'spelling' ? spellingQuestions : clozeQuestions;
     let shuffledQuestions = shuffleArray(sourceQuestions); 
     
-    // ✅ 將每個克漏字題目裡的「選項(options)」也洗牌，防止答案永遠在A
     if (mode === 'cloze') {
       shuffledQuestions = shuffledQuestions.map(q => ({
         ...q,
@@ -350,9 +318,7 @@ export default function App() {
       }));
     }
     
-    const MAX_QUESTIONS_PER_GAME = 10;
-    shuffledQuestions = shuffledQuestions.slice(0, MAX_QUESTIONS_PER_GAME);
-
+    shuffledQuestions = shuffledQuestions.slice(0, 10);
     setGameState(mode);
     setCurrentMode(mode);
     setActiveQuestions(shuffledQuestions); 
@@ -362,9 +328,7 @@ export default function App() {
     setWrongAnswers([]); 
     setTimeLeft(mode === 'spelling' ? 30 : 20); 
     
-    if (mode === 'spelling' && shuffledQuestions.length > 0) {
-      initSpellingQuestion(shuffledQuestions[0]);
-    }
+    if (mode === 'spelling' && shuffledQuestions.length > 0) initSpellingQuestion(shuffledQuestions[0]);
   };
 
   const moveToNextQuestion = (isSpelling = false) => {
@@ -373,28 +337,51 @@ export default function App() {
       const nextIndex = currentQIndex + 1;
       setCurrentQIndex(nextIndex);
       setTimeLeft(isSpelling ? 30 : 20); 
-      if (isSpelling) {
-        initSpellingQuestion(activeQuestions[nextIndex]);
-      }
+      if (isSpelling) initSpellingQuestion(activeQuestions[nextIndex]);
     } else {
       setGameState('result');
     }
   };
 
+  // ✅ 核心功能：遊戲結束時上傳錯題資料
   useEffect(() => {
     if (gameState === 'result') {
+      // 1. 更新本機排行榜
       setLeaderboard(prev => {
         const isDuplicate = prev.find(p => p.name === userName && p.score === score && (Date.now() - p.id) < 2000);
         if (isDuplicate) return prev;
-        const newEntry = { 
-          name: userName, score: score, mode: currentMode === 'spelling' ? '單字拼圖' : '克漏字', id: Date.now(), date: new Date().toLocaleDateString()
-        };
+        const newEntry = { name: userName, score: score, mode: currentMode === 'spelling' ? '單字拼圖' : '克漏字', id: Date.now(), date: new Date().toLocaleDateString() };
         const newBoard = [...prev, newEntry].sort((a, b) => b.score - a.score);
         localStorage.setItem('joyEnglishLeaderboard', JSON.stringify(newBoard));
         return newBoard;
       });
+
+      // 2. 學習數據分析：上傳錯題至 Google Sheet
+      if (wrongAnswers.length > 0 && !GOOGLE_POST_API_URL.includes('YOUR_POST_API_URL_HERE')) {
+        setIsUploadingData(true);
+        const payload = {
+          userName: userName,
+          wrongAnswers: wrongAnswers
+        };
+        
+        // 為了避免 CORS 預檢攔截，使用 text/plain 發送
+        fetch(GOOGLE_POST_API_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify(payload)
+        })
+        .then(res => res.json())
+        .then(data => {
+          console.log("錯題上傳成功", data);
+          setIsUploadingData(false);
+        })
+        .catch(err => {
+          console.error("錯題上傳失敗", err);
+          setIsUploadingData(false);
+        });
+      }
     }
-  }, [gameState, score, userName, currentMode]);
+  }, [gameState, score, userName, currentMode, wrongAnswers]);
 
   useEffect(() => {
     let timer;
@@ -403,7 +390,6 @@ export default function App() {
     } else if (timeLeft === 0 && !feedback) {
       playSound('incorrect');
       setFeedback('incorrect');
-      
       const currentQ = activeQuestions[currentQIndex];
       const isSpelling = gameState === 'spelling';
       setWrongAnswers(prev => [...prev, {
@@ -413,7 +399,6 @@ export default function App() {
           correctAnswer: isSpelling ? currentQ.word : currentQ.answer,
           translation: isSpelling ? '' : currentQ.translation
       }]);
-
       setTimeout(() => moveToNextQuestion(isSpelling), 1500);
     }
     return () => clearInterval(timer);
@@ -510,27 +495,16 @@ export default function App() {
         </div>
 
         <div className="space-y-4">
-          <button 
-            onClick={() => startGame('cloze')}
-            className="w-full py-4 px-6 bg-blue-500 hover:bg-blue-600 text-white rounded-2xl font-bold text-xl shadow-lg transform transition active:scale-95 flex items-center justify-between"
-          >
-            <span>✍️ 克漏字挑戰</span>
-            <ArrowRight className="w-6 h-6" />
+          <button onClick={() => startGame('cloze')} className="w-full py-4 px-6 bg-blue-500 hover:bg-blue-600 text-white rounded-2xl font-bold text-xl shadow-lg transform transition active:scale-95 flex items-center justify-between">
+            <span>✍️ 克漏字挑戰</span><ArrowRight className="w-6 h-6" />
           </button>
-          <button 
-            onClick={() => startGame('spelling')}
-            className="w-full py-4 px-6 bg-green-500 hover:bg-green-600 text-white rounded-2xl font-bold text-xl shadow-lg transform transition active:scale-95 flex items-center justify-between"
-          >
-            <span>🧩 單字拼圖王</span>
-            <ArrowRight className="w-6 h-6" />
+          <button onClick={() => startGame('spelling')} className="w-full py-4 px-6 bg-green-500 hover:bg-green-600 text-white rounded-2xl font-bold text-xl shadow-lg transform transition active:scale-95 flex items-center justify-between">
+            <span>🧩 單字拼圖王</span><ArrowRight className="w-6 h-6" />
           </button>
         </div>
 
         <div className="mt-6 pt-6 border-t border-gray-200 w-full">
-          <button
-            onClick={() => setShowLeaderboardModal(true)}
-            className="w-full py-3 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded-xl font-bold flex items-center justify-center transition active:scale-95 border-2 border-yellow-300"
-          >
+          <button onClick={() => setShowLeaderboardModal(true)} className="w-full py-3 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded-xl font-bold flex items-center justify-center transition active:scale-95 border-2 border-yellow-300">
             <ListOrdered className="w-5 h-5 mr-2" /> 查詢所有名次排名
           </button>
         </div>
@@ -543,28 +517,21 @@ export default function App() {
               <h2 className="text-2xl font-black flex items-center">
                 <Trophy className="w-6 h-6 mr-2 fill-current" /> 完整名次排名
               </h2>
-              <button onClick={() => setShowLeaderboardModal(false)} className="bg-yellow-500/50 hover:bg-yellow-500 rounded-full p-1 transition">
-                <X className="w-6 h-6" />
-              </button>
+              <button onClick={() => setShowLeaderboardModal(false)} className="bg-yellow-500/50 hover:bg-yellow-500 rounded-full p-1 transition"><X className="w-6 h-6" /></button>
             </div>
             <div className="overflow-y-auto p-4 flex-1">
               {leaderboard.length > 0 ? (
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b-2 border-gray-100 text-gray-500">
-                      <th className="py-2 pl-2">名次</th>
-                      <th className="py-2">代號</th>
-                      <th className="py-2">模式</th>
-                      <th className="py-2 text-right pr-2">分數</th>
+                      <th className="py-2 pl-2">名次</th><th className="py-2">代號</th><th className="py-2">模式</th><th className="py-2 text-right pr-2">分數</th>
                     </tr>
                   </thead>
                   <tbody>
                     {leaderboard.map((entry, idx) => (
                       <tr key={entry.id} className="border-b border-gray-50 hover:bg-yellow-50/50 transition-colors">
                         <td className="py-3 pl-2 font-bold text-gray-500">{idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`}</td>
-                        <td className="py-3 font-bold text-gray-800">{entry.name}</td>
-                        <td className="py-3 text-xs text-gray-500">{entry.mode}</td>
-                        <td className="py-3 text-right pr-2 font-black text-blue-600">{entry.score}</td>
+                        <td className="py-3 font-bold text-gray-800">{entry.name}</td><td className="py-3 text-xs text-gray-500">{entry.mode}</td><td className="py-3 text-right pr-2 font-black text-blue-600">{entry.score}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -694,12 +661,20 @@ export default function App() {
     const isPerfect = score === totalPossible && totalPossible > 0;
 
     return (
-      <div className="bg-white p-8 rounded-3xl shadow-xl text-center max-w-md w-full animate-in zoom-in-95 duration-500 border-4 border-yellow-300">
-        <Award className={`w-24 h-24 mx-auto mb-4 ${isPerfect ? 'text-yellow-500' : 'text-blue-500'}`} />
+      <div className="bg-white p-8 rounded-3xl shadow-xl text-center max-w-md w-full animate-in zoom-in-95 duration-500 border-4 border-yellow-300 relative overflow-hidden">
+        {/* ✅ 背景上傳狀態提示 */}
+        {isUploadingData && (
+          <div className="absolute top-0 left-0 w-full bg-blue-500 text-white py-1 text-xs font-bold flex justify-center items-center">
+            <CloudUpload className="w-4 h-4 mr-2 animate-bounce" /> 正在將錯題同步至雲端分析系統...
+          </div>
+        )}
+
+        <Award className={`w-24 h-24 mx-auto mb-4 mt-2 ${isPerfect ? 'text-yellow-500' : 'text-blue-500'}`} />
         <h2 className="text-3xl font-black text-gray-800 mb-2">測驗完成！</h2>
         <p className="text-gray-500 mb-6">你總共獲得了</p>
         <div className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500 mb-8">{score} / {totalPossible}</div>
         {isPerfect ? <p className="text-green-600 font-bold text-lg mb-8 bg-green-50 py-2 rounded-xl">太棒了！你是英文檢定小大師！ 🎉</p> : <p className="text-blue-600 font-bold text-lg mb-8 bg-blue-50 py-2 rounded-xl">繼續加油，下次一定能拿滿分！ 💪</p>}
+        
         <div className="space-y-4 mb-8">
           <button onClick={() => startGame(currentMode)} className="w-full py-4 px-6 bg-yellow-400 hover:bg-yellow-500 text-yellow-900 rounded-2xl font-bold text-xl shadow-md transform transition active:scale-95 flex items-center justify-center">
             <RotateCcw className="w-5 h-5 mr-2" /> 再玩一次
@@ -708,6 +683,7 @@ export default function App() {
             <Home className="w-5 h-5 mr-2" /> 回主選單
           </button>
         </div>
+
         {wrongAnswers.length > 0 && (
           <div className="bg-red-50 p-4 rounded-2xl border-2 border-red-200 text-left w-full mt-6 animate-in slide-in-from-bottom-4">
             <h3 className="text-lg font-bold text-red-800 mb-4 flex items-center justify-center"><AlertCircle className="w-5 h-5 mr-2" /> 錯題回顧 ({wrongAnswers.length} 題)</h3>
