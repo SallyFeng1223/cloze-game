@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Star, Award, ArrowRight, CheckCircle2, XCircle, RotateCcw, Home, Sparkles, Clock, Volume2, LogOut, Trophy, User, Download, Upload, AlertCircle, Loader2, ListOrdered, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Star, Award, ArrowRight, CheckCircle2, XCircle, RotateCcw, Home, Sparkles, Clock, Volume2, LogOut, Trophy, User, AlertCircle, Loader2, ListOrdered, X } from 'lucide-react';
 
 // 👇👇👇 內建題庫區 (做為無法連線 Google Sheet 時的備援資料) 👇👇👇
 const rawCSVData = `題型(1=克漏字/2=單字),題目或單字,選項(克漏字專用請用分號;隔開),正確答案(克漏字專用),翻譯(克漏字專用)
@@ -96,14 +96,15 @@ const rawCSVData = `題型(1=克漏字/2=單字),題目或單字,選項(克漏�
 `;
 // 👆👆👆 貼上到上方為止 👆👆👆
 
-const parseCSVRow = (str) => {
+// CSV(逗號) 與 TSV(Tab鍵) 的智慧解析器
+const parseCSVRow = (str, delimiter = ',') => {
   const result = [];
   let cur = '';
   let inQuote = false;
   for (let i = 0; i < str.length; i++) {
       if (str[i] === '"') {
           inQuote = !inQuote;
-      } else if (str[i] === ',' && !inQuote) {
+      } else if (str[i] === delimiter && !inQuote) {
           result.push(cur.trim());
           cur = '';
       } else {
@@ -200,22 +201,22 @@ export default function App() {
   const [currentMode, setCurrentMode] = useState('');
   
   const [showLeaderboardModal, setShowLeaderboardModal] = useState(false);
-  const [uploadMessage, setUploadMessage] = useState(null);
-  const fileInputRef = useRef(null);
   const [scrambledLetters, setScrambledLetters] = useState([]);
   const [selectedLetters, setSelectedLetters] = useState([]);
 
-  // ✅ 核心功能：向 Google Apps Script 獲取雲端題庫，並處理錯誤備援
+  // ✅ 核心功能：向 Google Sheets 發布的 CSV 獲取雲端題庫
   useEffect(() => {
-    const GOOGLE_API_URL = 'https://script.google.com/macros/s/AKfycbwYOUR_API_KEY_HERE/exec';
+    // 這是您提供的 Google Sheet CSV 直連網址
+    const GOOGLE_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQTwvB4VjTDD1-nsFjH8-fcXccWAebG-bPhwWLMfJrwDfRT3o_29WnXOHpnqepDNPIA3c5m0LdQVjBH/pub?gid=0&single=true&output=csv';
     
-    // 載入備用離線題庫的函數
     const loadOfflineData = () => {
       const cloze = [];
       const spelling = [];
       const lines = rawCSVData.split(/\r?\n/).filter(line => line.trim() !== '');
+      const delimiter = rawCSVData.includes('\t') ? '\t' : ','; 
+      
       for (let i = 1; i < lines.length; i++) {
-        const cols = parseCSVRow(lines[i]);
+        const cols = parseCSVRow(lines[i], delimiter);
         if (cols.length < 2) continue;
         
         const type = cols[0].toString().trim();
@@ -243,36 +244,54 @@ export default function App() {
     };
 
     const fetchQuestions = async () => {
-      // 1. 若網址尚未替換，直接載入離線資料
-      if (GOOGLE_API_URL.includes('YOUR_API_KEY_HERE')) {
-        console.warn("尚未設定 Google API 網址，將使用離線題庫。");
-        loadOfflineData();
-        return;
-      }
-
       try {
-        const response = await fetch(GOOGLE_API_URL);
+        const response = await fetch(GOOGLE_CSV_URL);
         if (!response.ok) throw new Error('網路回應錯誤');
         
-        const data = await response.json();
+        // 解析抓下來的純文字 CSV
+        const csvText = await response.text();
+        const lines = csvText.split(/\r?\n/).filter(line => line.trim() !== '');
+        const delimiter = csvText.includes('\t') ? '\t' : ','; 
         
-        if (data.clozeQuestions && data.clozeQuestions.length > 0) {
-          setClozeQuestions(data.clozeQuestions);
+        const cloze = [];
+        const spelling = [];
+        
+        for (let i = 1; i < lines.length; i++) {
+          const cols = parseCSVRow(lines[i], delimiter);
+          if (cols.length < 2) continue;
+          
+          const type = cols[0].toString().trim();
+          if (type === '1') {
+            cloze.push({
+              id: cloze.length + 1,
+              question: cols[1] || "",
+              options: (cols[2] || "").split(';').map(s => s.trim()).filter(s => s !== ""),
+              answer: cols[3] || "",
+              translation: cols[4] || ""
+            });
+          } else if (type === '2') {
+            const safeWord = (cols[1] || "").toLowerCase().replace(/\([^)]*\)/g, '').replace(/[^a-z]/g, '');
+            spelling.push({
+              id: spelling.length + 1,
+              word: safeWord,
+              hint: cols[2] || ""
+            });
+          }
         }
-        if (data.spellingQuestions && data.spellingQuestions.length > 0) {
-          setSpellingQuestions(data.spellingQuestions);
-        }
+        
+        if (cloze.length > 0) setClozeQuestions(cloze);
+        if (spelling.length > 0) setSpellingQuestions(spelling);
+        
         setIsLoading(false);
         setIsOfflineMode(false);
       } catch (error) {
-        console.error("無法載入雲端題庫，切換至離線模式:", error);
+        console.error("無法載入雲端題庫，切換至內建離線模式:", error);
         loadOfflineData();
       }
     };
 
     fetchQuestions();
     
-    // 預先載入語音
     if ('speechSynthesis' in window) {
       window.speechSynthesis.getVoices();
       window.speechSynthesis.onvoiceschanged = () => {
@@ -306,84 +325,6 @@ export default function App() {
     return scrambled;
   };
 
-  // --- 題庫上傳與下載功能 ---
-  const downloadTemplate = () => {
-    let csvContent = '\uFEFF'; 
-    csvContent += '題型(1=克漏字/2=單字),題目或單字,選項(克漏字專用請用分號;隔開),正確答案(克漏字專用),翻譯(克漏字專用)\n';
-    clozeQuestions.forEach(q => {
-      const escape = (str) => `"${String(str).replace(/"/g, '""')}"`;
-      const optionsStr = escape(q.options.join(';'));
-      csvContent += `1,${escape(q.question)},${optionsStr},${escape(q.answer)},${escape(q.translation)}\n`;
-    });
-    spellingQuestions.forEach(q => {
-      const escape = (str) => `"${String(str).replace(/"/g, '""')}"`;
-      csvContent += `2,${escape(q.word)},${escape(q.hint)},,\n`;
-    });
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'joy_english_題庫範本.csv';
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const text = event.target.result;
-        const lines = text.split(/\r?\n/).filter(line => line.trim() !== '');
-        
-        const newCloze = [];
-        const newSpelling = [];
-        
-        for (let i = 1; i < lines.length; i++) {
-          const cols = parseCSVRow(lines[i]);
-          if (cols.length < 2) continue; 
-          const type = cols[0].toString().trim();
-          
-          if (type === '1') {
-            newCloze.push({
-              id: newCloze.length + 1,
-              question: cols[1] || "",
-              options: (cols[2] || "").split(';').map(s => s.trim()).filter(s => s !== ""),
-              answer: cols[3] || "",
-              translation: cols[4] || ""
-            });
-          } else if (type === '2') {
-            const safeWord = (cols[1] || "").toLowerCase().replace(/\([^)]*\)/g, '').replace(/[^a-z]/g, '');
-            newSpelling.push({
-              id: newSpelling.length + 1,
-              word: safeWord,
-              hint: cols[2] || ""
-            });
-          }
-        }
-
-        let isValid = false;
-        if (newCloze.length > 0) { setClozeQuestions(newCloze); isValid = true; }
-        if (newSpelling.length > 0) { setSpellingQuestions(newSpelling); isValid = true; }
-
-        if (isValid) {
-          setUploadMessage({ type: 'success', text: `🎉 自訂題庫載入成功！` });
-          setIsOfflineMode(true); 
-        } else {
-          setUploadMessage({ type: 'error', text: '⚠️ 檔案中找不到有效的題目格式！' });
-        }
-      } catch (err) {
-        setUploadMessage({ type: 'error', text: '⚠️ 解析失敗，請確認上傳的是正確的 CSV 格式！' });
-      }
-      setTimeout(() => setUploadMessage(null), 4000);
-    };
-    reader.readAsText(file, "UTF-8");
-    e.target.value = ''; 
-  };
-
-
   const initSpellingQuestion = (questionObj) => {
     if (questionObj) {
       setScrambledLetters(generateSpellingOptions(questionObj.word));
@@ -399,9 +340,9 @@ export default function App() {
     }
     
     const sourceQuestions = mode === 'spelling' ? spellingQuestions : clozeQuestions;
-    let shuffledQuestions = shuffleArray(sourceQuestions);
+    let shuffledQuestions = shuffleArray(sourceQuestions); 
     
-    // ✅ 新增核心邏輯：如果是克漏字模式，將每個題目的「選項 (options)」也進行隨機洗牌
+    // ✅ 將每個克漏字題目裡的「選項(options)」也洗牌，防止答案永遠在A
     if (mode === 'cloze') {
       shuffledQuestions = shuffledQuestions.map(q => ({
         ...q,
@@ -532,7 +473,7 @@ export default function App() {
     return (
       <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center p-4">
         <Loader2 className="w-16 h-16 text-blue-500 animate-spin mb-4" />
-        <h2 className="text-xl font-bold text-gray-700">正在與題庫連線中...</h2>
+        <h2 className="text-xl font-bold text-gray-700">正在與雲端題庫連線中...</h2>
       </div>
     );
   }
@@ -546,7 +487,7 @@ export default function App() {
         
         {isOfflineMode ? (
           <p className="text-xs text-orange-600 font-bold mb-8 bg-orange-50 border border-orange-200 rounded-full py-1">
-            ⚠️ 雲端連線失敗，目前使用離線題庫 (共 {clozeQuestions.length + spellingQuestions.length} 題)
+            ⚠️ 雲端連線失敗，目前使用內建題庫 (共 {clozeQuestions.length + spellingQuestions.length} 題)
           </p>
         ) : (
           <p className="text-xs text-green-600 font-bold mb-8 bg-green-50 border border-green-200 rounded-full py-1">
@@ -585,41 +526,14 @@ export default function App() {
           </button>
         </div>
 
-        <div className="mt-6 pt-6 border-t border-gray-200 w-full grid grid-cols-2 gap-3">
+        <div className="mt-6 pt-6 border-t border-gray-200 w-full">
           <button
             onClick={() => setShowLeaderboardModal(true)}
-            className="col-span-2 py-3 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded-xl font-bold flex items-center justify-center transition active:scale-95 border-2 border-yellow-300"
+            className="w-full py-3 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded-xl font-bold flex items-center justify-center transition active:scale-95 border-2 border-yellow-300"
           >
             <ListOrdered className="w-5 h-5 mr-2" /> 查詢所有名次排名
           </button>
-
-          <button
-            onClick={downloadTemplate}
-            className="py-2 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-xl text-sm font-bold flex items-center justify-center transition active:scale-95 border border-gray-300"
-          >
-            <Download className="w-4 h-4 mr-1" /> 下載 CSV 題庫
-          </button>
-
-          <button
-            onClick={() => fileInputRef.current.click()}
-            className="py-2 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-xl text-sm font-bold flex items-center justify-center transition active:scale-95 border border-blue-200"
-          >
-            <Upload className="w-4 h-4 mr-1" /> 上傳 CSV 題庫
-          </button>
-          <input
-            type="file"
-            accept=".csv"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            className="hidden"
-          />
         </div>
-
-        {uploadMessage && (
-          <div className={`mt-4 p-3 rounded-xl text-sm font-bold animate-in fade-in slide-in-from-bottom-2 ${uploadMessage.type === 'success' ? 'bg-green-100 text-green-700 border border-green-200' : 'bg-red-100 text-red-700 border border-red-200'}`}>
-            {uploadMessage.text}
-          </div>
-        )}
       </div>
 
       {showLeaderboardModal && (
